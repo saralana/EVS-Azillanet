@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Services & Équipements</title>
+  <link rel="preconnect" href="https://api.mapbox.com">
+  <link rel="stylesheet" href="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.css">
+  <link rel="stylesheet" href="https://unpkg.com/lucide-static@0.468.0/font/Lucide.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark"><i data-lucide="map-pin"></i></div>
+        <div>
+          <h1>Services & Équipements</h1>
+          <p>Étude pour l'EVS - Azillanet</p>
+          <p>Minervois</p>
+        </div>
+      </div>
+
+      <div class="sidebar-toolbar">
+        <button id="toggleFilters" class="soft-btn"><i data-lucide="sliders-horizontal"></i> Filtres</button>
+        <button id="collapseSidebar" class="text-btn">Réduire <i data-lucide="chevron-left"></i></button>
+      </div>
+
+      <div id="filtersPanel" class="filters-panel">
+        <section class="filter-section">
+          <div class="section-title">
+            <strong>Catégories</strong>
+            <label class="check-all"><input type="checkbox" id="allCategories" checked> Tout sélectionner</label>
+          </div>
+          <div id="categoryFilters"></div>
+        </section>
+
+        <section class="filter-section">
+          <div class="section-title">
+            <strong>Sous-catégories</strong>
+            <label class="check-all"><input type="checkbox" id="allSubcategories" checked> Tout sélectionner</label>
+          </div>
+          <div id="subcategoryFilters"></div>
+        </section>
+      </div>
+    </aside>
+
+    <main class="map-area">
+      <div id="map"></div>
+
+      <div class="top-search">
+        <i data-lucide="search"></i>
+        <input id="searchInput" type="search" placeholder="Rechercher un service, une adresse..." autocomplete="off">
+        <button id="clearSearch" class="icon-btn hidden"><i data-lucide="x"></i></button>
+        <div id="searchResults" class="search-results hidden"></div>
+      </div>
+
+      <div class="map-actions">
+        <button id="refreshBtn" class="action-btn"><i data-lucide="refresh-cw"></i> Actualiser les données</button>
+        <button id="infoBtn" class="round-btn" title="Informations"><i data-lucide="info"></i></button>
+      </div>
+
+      <div class="legend card">
+        <div class="legend-header" style="display:none important!">
+          <strong>Légende</strong>
+          <button id="toggleLegend" class="icon-btn"><i data-lucide="chevron-up"></i></button>
+        </div>
+        <div id="legendBody">
+          <div class="legend-title">Catégories (couleurs)</div>
+          <div id="categoryLegend"></div>
+          <div class="legend-divider"></div>
+          <div class="legend-title">Sous-catégories (icônes)</div>
+          <div id="iconLegend" class="icon-grid"></div>
+          <div class="legend-hint"><i data-lucide="mouse-pointer-2"></i> Cliquez sur un marqueur pour plus d’informations.</div>
+        </div>
+      </div>
+
+      <div class="map-controls">
+        <button id="zoomIn" class="control-btn">+</button>
+        <button id="zoomOut" class="control-btn">−</button>
+        <button id="resetView" class="control-btn"><i data-lucide="locate-fixed"></i></button>
+      </div>
+
+      <div class="bottom-panel">
+        <div class="stats-row" id="statsRow"></div>
+        <div class="results-header">
+          <div><strong id="resultsTitle">Résultats</strong></div>
+          <button id="toggleResults" class="text-btn">Voir la liste complète <i data-lucide="chevron-right"></i></button>
+        </div>
+        <div id="resultsList" class="results-list"></div>
+      </div>
+
+      <div id="loading" class="loading-overlay">
+        <div class="loading-box">
+          <div class="loading-main">
+            <div class="spinner"></div>
+            <div>
+              <strong>Chargement des services…</strong>
+              <p id="loadingText">Connexion aux sources Google Sheets</p>
+            </div>
+          </div>
+          <div class="loading-progress-track"><div id="loadingProgress" class="loading-progress"></div></div>
+          <div class="diagnostic-row">
+            <span id="diagMapbox">… Mapbox</span>
+            <span id="diagSources">0 / 53 sources</span>
+            <span id="diagLayers">… Layers</span>
+          </div>
+          <div class="diagnostic-detail" id="diagDetail">Initialisation…</div>
+          <div id="loadingSources" class="loading-sources"></div>
+        </div>
+      </div>
+
+      <div id="toast" class="toast hidden"></div>
+    </main>
+  </div>
+
+  <script src="https://api.mapbox.com/mapbox-gl-js/v3.15.0/mapbox-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js"></script>
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
