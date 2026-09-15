@@ -250,6 +250,7 @@ function buildMapLayers() {
       type: "geojson",
       data: {type:"FeatureCollection", features:[]},
       cluster: true,
+      // HERE CHANGE ZOOM AND CLOSENESS CLUSTER
       // Keep clusters while zooming in. Individual points only take over
       // after this zoom level.
       clusterMaxZoom: 17,
