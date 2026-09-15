@@ -135,9 +135,11 @@ function recordToFeature(r) {
   };
 }
 
-function makeSourceId(subId) { return `src-${subId}`; }
-function makeClusterLayerId(subId) { return `cluster-${subId}`; }
-function makeClusterCountLayerId(subId) { return `cluster-count-${subId}`; }
+// One clustered GeoJSON source per CATEGORY.
+// Point layers remain separate per SUBCATEGORY so their filters/icons stay independent.
+function makeSourceId(categoryId) { return `src-cat-${categoryId}`; }
+function makeClusterLayerId(categoryId) { return `cluster-cat-${categoryId}`; }
+function makeClusterCountLayerId(categoryId) { return `cluster-count-cat-${categoryId}`; }
 function makePointLayerId(subId) { return `point-${subId}`; }
 
 function initMap() {
@@ -181,6 +183,33 @@ function initMap() {
     });
 
     state.map.on("click", e => {
+      const clusterLayers = categories
+        .map(cat => makeClusterLayerId(cat.id))
+        .filter(id => state.map.getLayer(id));
+
+      const clusters = clusterLayers.length
+        ? state.map.queryRenderedFeatures(e.point, {layers: clusterLayers})
+        : [];
+
+      if (clusters.length) {
+        const layerId = clusters[0].layer.id;
+        const cat = categories.find(c => makeClusterLayerId(c.id) === layerId);
+        const source = cat ? state.map.getSource(makeSourceId(cat.id)) : null;
+        const clusterId = clusters[0].properties?.cluster_id;
+
+        if (source && clusterId !== undefined) {
+          source.getClusterExpansionZoom(clusterId, (err, zoom) => {
+            if (!err) {
+              state.map.easeTo({
+                center: clusters[0].geometry.coordinates,
+                zoom
+              });
+            }
+          });
+        }
+        return;
+      }
+
       const pointLayers = categories.flatMap(c =>
         c.subcategories.map(s => makePointLayerId(s.id))
       ).filter(id => state.map.getLayer(id));
@@ -214,53 +243,54 @@ function initMap() {
 
 function buildMapLayers() {
   categories.forEach(cat => {
+    const sourceId = makeSourceId(cat.id);
+
+    // IMPORTANT: one source for the whole category.
+    state.map.addSource(sourceId, {
+      type: "geojson",
+      data: {type:"FeatureCollection", features:[]},
+      cluster: true,
+      // Keep clusters while zooming in. Individual points only take over
+      // after this zoom level.
+      clusterMaxZoom: 17,
+      clusterRadius: 48
+    });
+
+    state.map.addLayer({
+      id: makeClusterLayerId(cat.id),
+      type: "circle",
+      source: sourceId,
+      filter: ["has","point_count"],
+      paint: {
+        "circle-color": cat.color,
+        "circle-radius": ["step", ["get","point_count"], 19, 10, 22, 30, 26, 100, 31],
+        "circle-stroke-color": "#fff",
+        "circle-stroke-width": 3,
+        "circle-opacity": 0.96
+      }
+    });
+
+    state.map.addLayer({
+      id: makeClusterCountLayerId(cat.id),
+      type: "symbol",
+      source: sourceId,
+      filter: ["has","point_count"],
+      layout: {
+        "text-field": "{point_count_abbreviated}",
+        "text-font": ["Open Sans Bold"],
+        "text-size": 11
+      },
+      paint: {"text-color":"#fff"}
+    });
+
+    // Points of different subcategories share the category source.
+    // Their own layers preserve individual filtering.
     cat.subcategories.forEach(sub => {
-      const sourceId = makeSourceId(sub.id);
-      state.map.addSource(sourceId, {
-        type: "geojson",
-        data: {type:"FeatureCollection", features:[]},
-        cluster: true,
-        clusterMaxZoom: 13,
-        clusterRadius: 48
-      });
-
-      state.map.addLayer({
-        id: makeClusterLayerId(sub.id),
-        type: "circle",
-        source: sourceId,
-        filter: ["has","point_count"],
-        paint: {
-          "circle-color": cat.color,
-          "circle-radius": [
-            "step", ["get","point_count"],
-            19, 10, 22, 30, 26, 100, 31
-          ],
-          "circle-stroke-color": "#fff",
-          "circle-stroke-width": 3,
-          "circle-opacity": 0.96
-        }
-      });
-
-      state.map.addLayer({
-        id: makeClusterCountLayerId(sub.id),
-        type: "symbol",
-        source: sourceId,
-        filter: ["has","point_count"],
-        layout: {
-          "text-field": "{point_count_abbreviated}",
-          "text-font": ["Open Sans Bold"],
-          "text-size": 11
-        },
-        paint: {"text-color":"#fff"}
-      });
-
-      // Individual points are deliberately a separate layer for EACH subcategory.
-      // Therefore clusters can NEVER combine different subcategories.
       state.map.addLayer({
         id: makePointLayerId(sub.id),
         type: "circle",
         source: sourceId,
-        filter: ["!", ["has","point_count"]],
+        filter: ["all", ["!",["has","point_count"]], ["==",["get","subcategoryId"],sub.id]],
         paint: {
           "circle-color": cat.color,
           "circle-radius": 8,
@@ -427,16 +457,22 @@ async function loadAllData() {
 function updateSources() {
   if (!state.map) return;
 
-  categories.forEach(cat => cat.subcategories.forEach(sub => {
-    const source = state.map.getSource(makeSourceId(sub.id));
+  categories.forEach(cat => {
+    const source = state.map.getSource(makeSourceId(cat.id));
     if (!source) return;
 
-    const records = state.bySubcategory.get(sub.id) || [];
+    // The category source contains ONLY currently selected subcategories.
+    // Therefore Mapbox's cluster engine counts the selected children together.
+    const features = cat.subcategories
+      .filter(sub => state.subcategoryEnabled.get(sub.id) === true)
+      .flatMap(sub => state.bySubcategory.get(sub.id) || [])
+      .map(recordToFeature);
+
     source.setData({
       type: "FeatureCollection",
-      features: records.map(recordToFeature)
+      features
     });
-  }));
+  });
 }
 
 function renderFilters() {
@@ -553,6 +589,7 @@ function wireFilterEvents() {
     input.indeterminate = false;
     state.categoryEnabled.set(catId, input.checked);
 
+    updateSources();
     updateVisibility();
     renderStats();
     renderResults();
@@ -572,6 +609,7 @@ function wireFilterEvents() {
     // Parent is derived UI state only.
     syncCategoryCheckbox(catId);
 
+    updateSources();
     updateVisibility();
     renderStats();
     renderResults();
@@ -592,16 +630,30 @@ function wireFilterEvents() {
 }
 
 function updateVisibility() {
-  categories.forEach(cat => cat.subcategories.forEach(sub => {
-    // Subcategory state is the source of truth. The parent checkbox can be
-    // indeterminate when only some children are selected.
-    const visible = state.subcategoryEnabled.get(sub.id);
-    [makeClusterLayerId(sub.id), makeClusterCountLayerId(sub.id), makePointLayerId(sub.id)].forEach(id => {
+  if (!state.map) return;
+
+  categories.forEach(cat => {
+    const categoryActive = cat.subcategories.some(
+      sub => state.subcategoryEnabled.get(sub.id) === true
+    );
+
+    [makeClusterLayerId(cat.id), makeClusterCountLayerId(cat.id)].forEach(id => {
       if (state.map.getLayer(id)) {
-        state.map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
+        state.map.setLayoutProperty(id, "visibility", categoryActive ? "visible" : "none");
       }
     });
-  }));
+
+    cat.subcategories.forEach(sub => {
+      const id = makePointLayerId(sub.id);
+      if (state.map.getLayer(id)) {
+        state.map.setLayoutProperty(
+          id,
+          "visibility",
+          state.subcategoryEnabled.get(sub.id) === true ? "visible" : "none"
+        );
+      }
+    });
+  });
 }
 
 function renderLegend() {
@@ -853,6 +905,7 @@ function setupUI() {
       allSub.indeterminate = false;
     }
 
+    updateSources();
     updateVisibility();
     renderStats();
     renderResults();
@@ -888,6 +941,7 @@ function setupUI() {
       allCat.indeterminate = false;
     }
 
+    updateSources();
     updateVisibility();
     renderStats();
     renderResults();
