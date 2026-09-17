@@ -38,6 +38,19 @@ button{cursor:pointer}
 .section-title strong{font-size:12px}
 .check-all{font-size:9px;color:#7a818c;display:flex;gap:5px;align-items:center}
 .category-row,.subcategory-row{display:flex;align-items:center;gap:7px;padding:7px 2px;border-radius:8px}
+
+.category-group{margin:0}
+.category-row{position:relative}
+.category-row.open{background:var(--soft)}
+.expand-btn{transition:background .18s ease}
+.expand-btn svg{transition:transform .2s ease}
+.category-row.open .expand-btn svg{transform:rotate(180deg)}
+.subcategory-list{
+  margin:0 0 6px 14px;
+  padding:2px 0 3px 39px;
+  border-left:2px solid #eef0f3;
+}
+.subcategory-row{padding:6px 2px}
 .category-row:hover,.subcategory-row:hover{background:var(--soft)}
 .category-row input,.subcategory-row input{accent-color:#1f2937}
 .category-label{display:flex;align-items:center;gap:7px;min-width:0;flex:1;font-size:11px}
@@ -46,7 +59,7 @@ button{cursor:pointer}
 .count{font-size:10px;color:#737b86;background:#f0f2f5;border-radius:8px;padding:2px 6px}
 .expand-btn{width:22px;height:22px;display:grid;place-items:center;border:0;background:none;color:#7b838e}
 .expand-btn svg{width:14px;height:14px}
-.subcategory-list{padding-left:29px}
+.subcategory-list{padding-left:39px}
 .subcategory-row .category-dot{width:18px;height:18px;border-radius:6px}
 .subcategory-row .category-dot svg{width:11px;height:11px}
 .map-area{position:relative;flex:1;min-width:0;height:100%}

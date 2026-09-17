@@ -250,7 +250,6 @@ function buildMapLayers() {
       type: "geojson",
       data: {type:"FeatureCollection", features:[]},
       cluster: true,
-      // HERE CHANGE ZOOM AND CLOSENESS CLUSTER
       // Keep clusters while zooming in. Individual points only take over
       // after this zoom level.
       clusterMaxZoom: 17,
@@ -479,8 +478,20 @@ function updateSources() {
 function renderFilters() {
   const categoryContainer = $("#categoryFilters");
   const subContainer = $("#subcategoryFilters");
+
   categoryContainer.innerHTML = "";
-  subContainer.innerHTML = "";
+
+  // Compatibility: if an older index.html still contains the standalone
+  // "Sous-catégories" section, remove it because subcategories are now
+  // rendered directly under their parent category.
+  if (subContainer) {
+    const section = subContainer.closest(".filter-section");
+    if (section) {
+      section.remove();
+    } else {
+      subContainer.innerHTML = "";
+    }
+  }
 
   categories.forEach(cat => {
     const total = cat.subcategories.reduce(
@@ -503,17 +514,25 @@ function renderFilters() {
       <span class="category-dot" style="background:${cat.color}">${iconSvg(cat.subcategories[0]?.icon)}</span>
       <span class="category-label">${cat.number} ${escapeHtml(cat.name)}</span>
       <span class="count">${total}</span>
-      <button type="button" class="expand-btn" data-expand="${cat.id}">
+      <button type="button"
+        class="expand-btn"
+        data-expand="${cat.id}"
+        aria-expanded="false"
+        aria-controls="subcategory-list-${cat.id}">
         <i data-lucide="chevron-down"></i>
       </button>
     `;
-    categoryContainer.appendChild(row);
 
     const categoryInput = row.querySelector("[data-category]");
     categoryInput.checked = allSubs;
     categoryInput.indeterminate = someSubs;
 
+    const categoryGroup = document.createElement("div");
+    categoryGroup.className = "category-group";
+    categoryGroup.appendChild(row);
+
     const subList = document.createElement("div");
+    subList.id = `subcategory-list-${cat.id}`;
     subList.className = "subcategory-list";
     subList.dataset.subList = cat.id;
     subList.style.display = "none";
@@ -534,7 +553,8 @@ function renderFilters() {
       subList.appendChild(subRow);
     });
 
-    subContainer.appendChild(subList);
+    categoryGroup.appendChild(subList);
+    categoryContainer.appendChild(categoryGroup);
 
     state.categoryEnabled.set(cat.id, enabledSubs.length > 0);
   });
@@ -548,7 +568,7 @@ function syncCategoryCheckbox(catId) {
   if (!cat) return;
 
   const inputs = cat.subcategories.map(sub =>
-    document.querySelector(`#subcategoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`)
+    document.querySelector(`#categoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`)
   ).filter(Boolean);
 
   const checked = inputs.filter(input => input.checked).length;
@@ -564,51 +584,48 @@ function syncCategoryCheckbox(catId) {
 
 function wireFilterEvents() {
   const categoryContainer = $("#categoryFilters");
-  const subcategoryContainer = $("#subcategoryFilters");
 
-  // Use delegated events and DO NOT rebuild the filter DOM after a
-  // subcategory click. Rebuilding was the source of the "everything
-  // disappears" behavior because the clicked control was being replaced
-  // immediately.
+  // Both category and subcategory controls now live inside #categoryFilters.
   categoryContainer.onchange = event => {
-    const input = event.target.closest("[data-category]");
-    if (!input) return;
+    const subInput = event.target.closest("[data-subcategory]");
 
-    const catId = input.dataset.category;
+    if (subInput) {
+      const subId = subInput.dataset.subcategory;
+      const catId = subInput.dataset.category;
+      if (!subId || !catId) return;
+
+      state.subcategoryEnabled.set(subId, subInput.checked);
+      syncCategoryCheckbox(catId);
+
+      updateSources();
+      updateVisibility();
+      renderStats();
+      renderResults();
+      return;
+    }
+
+    const categoryInput = event.target.closest("[data-category]");
+    if (!categoryInput) return;
+
+    const catId = categoryInput.dataset.category;
     const cat = categories.find(c => c.id === catId);
     if (!cat) return;
 
-    cat.subcategories.forEach(sub => {
-      state.subcategoryEnabled.set(sub.id, input.checked);
+    const group = categoryInput.closest(".category-group");
+    const children = group
+      ? group.querySelectorAll("[data-subcategory]")
+      : [];
 
-      const child = subcategoryContainer.querySelector(
-        `[data-subcategory="${CSS.escape(sub.id)}"]`
-      );
-      if (child) child.checked = input.checked;
+    cat.subcategories.forEach(sub => {
+      state.subcategoryEnabled.set(sub.id, categoryInput.checked);
     });
 
-    input.indeterminate = false;
-    state.categoryEnabled.set(catId, input.checked);
+    children.forEach(child => {
+      child.checked = categoryInput.checked;
+    });
 
-    updateSources();
-    updateVisibility();
-    renderStats();
-    renderResults();
-  };
-
-  subcategoryContainer.onchange = event => {
-    const input = event.target.closest("[data-subcategory]");
-    if (!input) return;
-
-    const subId = input.dataset.subcategory;
-    const catId = input.dataset.category;
-    if (!subId || !catId) return;
-
-    // Change ONLY this subcategory.
-    state.subcategoryEnabled.set(subId, input.checked);
-
-    // Parent is derived UI state only.
-    syncCategoryCheckbox(catId);
+    categoryInput.indeterminate = false;
+    state.categoryEnabled.set(catId, categoryInput.checked);
 
     updateSources();
     updateVisibility();
@@ -618,14 +635,35 @@ function wireFilterEvents() {
 
   categoryContainer.onclick = event => {
     const btn = event.target.closest("[data-expand]");
-    if (!btn) return;
+    const row = event.target.closest(".category-row");
+
+    // The checkbox keeps its normal filtering behavior.
+    if (event.target.closest("input")) return;
+
+    if (!btn && !row) return;
 
     event.preventDefault();
-    const list = subcategoryContainer.querySelector(
-      `[data-sub-list="${CSS.escape(btn.dataset.expand)}"]`
+
+    const catId =
+      btn?.dataset.expand ||
+      row?.querySelector("[data-expand]")?.dataset.expand;
+
+    if (!catId) return;
+
+    const currentRow = row;
+    const list = categoryContainer.querySelector(
+      `[data-sub-list="${CSS.escape(catId)}"]`
     );
-    if (list) {
-      list.style.display = list.style.display === "none" ? "block" : "none";
+
+    if (!list || !currentRow) return;
+
+    const isOpen = list.style.display !== "none";
+    list.style.display = isOpen ? "none" : "block";
+    currentRow.classList.toggle("open", !isOpen);
+
+    const expandButton = currentRow.querySelector("[data-expand]");
+    if (expandButton) {
+      expandButton.setAttribute("aria-expanded", String(!isOpen));
     }
   };
 }
@@ -886,7 +924,7 @@ function setupUI() {
         state.subcategoryEnabled.set(sub.id, checked);
 
         const child = document.querySelector(
-          `#subcategoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`
+          `#categoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`
         );
         if (child) child.checked = checked;
       });
@@ -912,41 +950,45 @@ function setupUI() {
     renderResults();
   });
 
-  $("#allSubcategories").addEventListener("change", e => {
-    const checked = e.target.checked;
+  const allSubcategoriesInput = $("#allSubcategories");
 
-    categories.forEach(cat => {
-      cat.subcategories.forEach(sub => {
-        state.subcategoryEnabled.set(sub.id, checked);
+  if (allSubcategoriesInput) {
+    allSubcategoriesInput.addEventListener("change", e => {
+      const checked = e.target.checked;
 
-        const child = document.querySelector(
-          `#subcategoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`
+      categories.forEach(cat => {
+        cat.subcategories.forEach(sub => {
+          state.subcategoryEnabled.set(sub.id, checked);
+
+          const child = document.querySelector(
+            `#categoryFilters [data-subcategory="${CSS.escape(sub.id)}"]`
+          );
+          if (child) child.checked = checked;
+        });
+
+        state.categoryEnabled.set(cat.id, checked);
+
+        const parent = document.querySelector(
+          `#categoryFilters [data-category="${CSS.escape(cat.id)}"]`
         );
-        if (child) child.checked = checked;
+        if (parent) {
+          parent.checked = checked;
+          parent.indeterminate = false;
+        }
       });
 
-      state.categoryEnabled.set(cat.id, checked);
-
-      const parent = document.querySelector(
-        `#categoryFilters [data-category="${CSS.escape(cat.id)}"]`
-      );
-      if (parent) {
-        parent.checked = checked;
-        parent.indeterminate = false;
+      const allCat = $("#allCategories");
+      if (allCat) {
+        allCat.checked = checked;
+        allCat.indeterminate = false;
       }
+
+      updateSources();
+      updateVisibility();
+      renderStats();
+      renderResults();
     });
-
-    const allCat = $("#allCategories");
-    if (allCat) {
-      allCat.checked = checked;
-      allCat.indeterminate = false;
-    }
-
-    updateSources();
-    updateVisibility();
-    renderStats();
-    renderResults();
-  });
+  }
 
   lucide.createIcons();
 }
