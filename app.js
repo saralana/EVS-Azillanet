@@ -142,6 +142,146 @@ function makeClusterLayerId(categoryId) { return `cluster-cat-${categoryId}`; }
 function makeClusterCountLayerId(categoryId) { return `cluster-count-cat-${categoryId}`; }
 function makePointLayerId(subId) { return `point-${subId}`; }
 
+/*
+ * Custom replacement labels for the 16 selected Minervois localities.
+ *
+ * The current custom style exposes settlement-minor-label directly.
+ * We therefore:
+ *   1) add a GeoJSON source containing the 16 towns;
+ *   2) add one custom symbol layer from zoom 9 to 22;
+ *   3) exclude those exact names from the original settlement-minor-label.
+ *
+ * This keeps the custom labels visible and editable all the way to zoom 22,
+ * while the other Mapbox settlement labels keep their normal behavior.
+ */
+function addForcedSettlementLabels() {
+  if (!state.map) return;
+
+  const sourceId = "forced-settlement-labels";
+  const layerId = "forced-settlement-labels";
+
+  // Coordinates and properties from the user's actual place_label inspection.
+  const forcedSettlements = [
+    {name:"Agel",               longitude:2.852754592895508, latitude:43.338101253312686, symbolrank:16, filterrank:2},
+    {name:"Aigne",              longitude:2.7980804443359375, latitude:43.332701157395036, symbolrank:16, filterrank:2},
+    {name:"Aigues-Vives",       longitude:2.817091941833496,  latitude:43.337601842628885, symbolrank:16, filterrank:1},
+    {name:"Azillanet",          longitude:2.737741470336914, latitude:43.32458450313996,  symbolrank:16, filterrank:2},
+    {name:"Beaufort",           longitude:2.7587270736694336, latitude:43.29857268764732,  symbolrank:16, filterrank:4},
+    {name:"La Caunette",        longitude:2.7795839309692383, latitude:43.352488759492616, symbolrank:16, filterrank:1},
+    {name:"Cesseras",           longitude:2.7167129516601562, latitude:43.32420986214322,  symbolrank:16, filterrank:5},
+    {name:"Félines-Minervois",  longitude:2.601141929626465,  latitude:43.3298916690492,   symbolrank:16, filterrank:1},
+    {name:"La Livinière",       longitude:2.6363325119018555, latitude:43.316092073213014,  symbolrank:16, filterrank:3},
+    {name:"Minerve",            longitude:2.746281623840332,  latitude:43.35395540696757,   symbolrank:16, filterrank:3},
+    {name:"Olonzac",            longitude:2.729673385620117,  latitude:43.284453573835634,  symbolrank:15, filterrank:1},
+    {name:"Oupia",              longitude:2.7666234970092773, latitude:43.28979548243444,   symbolrank:16, filterrank:3},
+    {name:"Siran",              longitude:2.661309242248535,  latitude:43.313562848157375,  symbolrank:16, filterrank:4},
+    {name:"Pépieux",            longitude:2.680063247680664,  latitude:43.29744827659317,   symbolrank:15, filterrank:2},
+    {name:"Rieux-Minervois",    longitude:2.5861215591430664, latitude:43.28267283338644,   symbolrank:15, filterrank:1},
+    {name:"Lézignan-Corbières", longitude:2.7574825286865234, latitude:43.20089013057347,   symbolrank:13, filterrank:1}
+  ];
+
+  const features = forcedSettlements.map(place => ({
+    type: "Feature",
+    geometry: {
+      type: "Point",
+      coordinates: [place.longitude, place.latitude]
+    },
+    properties: {
+      name: place.name,
+      class: "settlement",
+      worldview: "all",
+      symbolrank: place.symbolrank,
+      filterrank: place.filterrank,
+      text_anchor: "bottom",
+      capital: 0
+    }
+  }));
+
+  if (!state.map.getSource(sourceId)) {
+    state.map.addSource(sourceId, {
+      type: "geojson",
+      data: {
+        type: "FeatureCollection",
+        features
+      }
+    });
+  }
+
+  if (!state.map.getLayer(layerId)) {
+    state.map.addLayer({
+      id: layerId,
+      type: "symbol",
+      source: sourceId,
+      minzoom: 9,
+      maxzoom: 22,
+
+      layout: {
+        "text-line-height": 1.1,
+
+        // ===== CUSTOM TYPOGRAPHY =====
+        // Increase/decrease these values to change the size of the 16 towns.
+        "text-size": [
+          "interpolate",
+          ["linear"],
+          ["zoom"],
+          9, 15,
+          13, 17,
+          18, 19,
+          22, 19
+        ],
+
+        "text-radial-offset": 0,
+        "symbol-sort-key": ["get", "symbolrank"],
+        "icon-image": "",
+        "text-font": [
+          "DIN Pro Regular",
+          "Arial Unicode MS Regular"
+        ],
+        "text-anchor": ["get", "text_anchor"],
+        "text-field": ["get", "name"],
+        "text-max-width": 11
+      },
+
+      paint: {
+        // ===== CUSTOM COLOR =====
+        // Change this one value to change the color of the 16 towns.
+        "text-color": "#000",
+        "text-halo-color": "#FFFFFF",
+        "text-halo-width": 1.5,
+        "text-halo-blur": 0.5
+      }
+    });
+  }
+
+  // Deterministic replacement:
+  // keep our custom label from zoom 9 through 22 and remove those same
+  // names from the original Mapbox label layer to prevent duplicates.
+  const originalLayerId = "settlement-minor-label";
+
+  if (state.map.getLayer(originalLayerId)) {
+    const names = forcedSettlements.map(place => place.name);
+    const currentFilter = state.map.getFilter(originalLayerId);
+
+    const excludeForcedNames = [
+      "!",
+      [
+        "match",
+        ["get", "name"],
+        names,
+        true,
+        false
+      ]
+    ];
+
+    state.map.setFilter(
+      originalLayerId,
+      currentFilter
+        ? ["all", currentFilter, excludeForcedNames]
+        : excludeForcedNames
+    );
+  }
+}
+
 function initMap() {
   // Keep Mapbox initialization isolated from data loading.
   // A layer/source error must never prevent the CSV diagnostic from running.
@@ -164,6 +304,8 @@ function initMap() {
 
       try {
         buildMapLayers();
+        addForcedSettlementLabels();
+
         state.diagnostics.layers = "ok";
         updateSources();
         updateVisibility();
