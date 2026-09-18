@@ -26,7 +26,9 @@ const state = {
     layers: "pending",
     loaded: 0,
     total: 0
-  }
+  },
+  forcedSettlementFeatures: [],
+  forcedSettlementLayoutTimer: null
 };
 
 categories.forEach(cat => cat.subcategories.forEach(sub => {
@@ -145,43 +147,317 @@ function makePointLayerId(subId) { return `point-${subId}`; }
 /*
  * Custom replacement labels for the 16 selected Minervois localities.
  *
- * The current custom style exposes settlement-minor-label directly.
- * We therefore:
- *   1) add a GeoJSON source containing the 16 towns;
- *   2) add one custom symbol layer from zoom 9 to 22;
- *   3) exclude those exact names from the original settlement-minor-label.
+ * The labels stay fully visible from zoom 9 to 22.  Instead of using the
+ * Mapbox collision engine (which can hide labels), we do a small, explicit
+ * screen-space test against the ACTUAL rendered cluster circles currently
+ * visible on the map.  When a circle intersects a label, the label is moved
+ * to the nearest free side / above / below position.
  *
- * This keeps the custom labels visible and editable all the way to zoom 22,
- * while the other Mapbox settlement labels keep their normal behavior.
+ * The important point is that labels are NEVER hidden by this logic.
  */
+const FORCED_SETTLEMENTS = [
+  {name:"Agel",               longitude:2.852754592895508, latitude:43.338101253312686, symbolrank:16, filterrank:2},
+  {name:"Aigne",              longitude:2.7980804443359375, latitude:43.332701157395036, symbolrank:16, filterrank:2},
+  {name:"Aigues-Vives",       longitude:2.817091941833496,  latitude:43.337601842628885, symbolrank:16, filterrank:1},
+  {name:"Azillanet",          longitude:2.737741470336914, latitude:43.32458450313996,  symbolrank:16, filterrank:2},
+  {name:"Beaufort",           longitude:2.7587270736694336, latitude:43.29857268764732,  symbolrank:16, filterrank:4},
+  {name:"La Caunette",        longitude:2.7795839309692383, latitude:43.352488759492616, symbolrank:16, filterrank:1},
+  {name:"Cesseras",           longitude:2.7167129516601562, latitude:43.32420986214322,  symbolrank:16, filterrank:5},
+  {name:"Félines-Minervois",  longitude:2.601141929626465,  latitude:43.3298916690492,   symbolrank:16, filterrank:1},
+  {name:"La Livinière",       longitude:2.6363325119018555, latitude:43.316092073213014,  symbolrank:16, filterrank:3},
+  {name:"Minerve",            longitude:2.746281623840332,  latitude:43.35395540696757,   symbolrank:16, filterrank:3},
+  {name:"Olonzac",            longitude:2.729673385620117,  latitude:43.284453573835634,   symbolrank:15, filterrank:1},
+  {name:"Oupia",              longitude:2.7666234970092773, latitude:43.28979548243444,   symbolrank:16, filterrank:3},
+  {name:"Siran",              longitude:2.661309242248535,  latitude:43.313562848157375,   symbolrank:16, filterrank:4},
+  {name:"Pépieux",            longitude:2.680063247680664,  latitude:43.29744827659317,   symbolrank:15, filterrank:2},
+  {name:"Rieux-Minervois",    longitude:2.5861215591430664, latitude:43.28267283338644,   symbolrank:15, filterrank:1},
+  {name:"Lézignan-Corbières", longitude:2.7574825286865234, latitude:43.20089013057347,   symbolrank:13, filterrank:1}
+];
+
+function forcedLabelTextSize() {
+  const z = state.map?.getZoom?.() ?? 9;
+  if (z <= 9) return 16;
+  if (z <= 13) return 16 + (z - 9) * (2 / 4);
+  if (z <= 18) return 18 + (z - 13) * (2 / 5);
+  return 20 + (z - 18) * (2 / 4);
+}
+
+function forcedLabelClusterRadius(pointCount) {
+  // Matches the cluster circle-radius expression used in buildMapLayers().
+  const count = Number(pointCount) || 0;
+  if (count < 10) return 19;
+  if (count < 30) return 22;
+  if (count < 100) return 26;
+  return 31;
+}
+
+function forcedLabelTextBox(point, anchor, textWidth, textHeight, radialOffsetPx) {
+  const diagonal = Math.SQRT1_2;
+  const directions = {
+    top: [0, -1],
+    bottom: [0, 1],
+    left: [-1, 0],
+    right: [1, 0],
+    "top-left": [-diagonal, -diagonal],
+    "top-right": [diagonal, -diagonal],
+    "bottom-left": [-diagonal, diagonal],
+    "bottom-right": [diagonal, diagonal]
+  };
+
+  const [dx, dy] = directions[anchor] || [0, -1];
+  const ax = point.x + dx * radialOffsetPx;
+  const ay = point.y + dy * radialOffsetPx;
+
+  let x1, y1, x2, y2;
+  switch (anchor) {
+    case "top":
+      x1 = ax - textWidth / 2; y1 = ay;
+      x2 = ax + textWidth / 2; y2 = ay + textHeight;
+      break;
+    case "bottom":
+      x1 = ax - textWidth / 2; y1 = ay - textHeight;
+      x2 = ax + textWidth / 2; y2 = ay;
+      break;
+    case "left":
+      x1 = ax; y1 = ay - textHeight / 2;
+      x2 = ax + textWidth; y2 = ay + textHeight / 2;
+      break;
+    case "right":
+      x1 = ax - textWidth; y1 = ay - textHeight / 2;
+      x2 = ax; y2 = ay + textHeight / 2;
+      break;
+    case "top-left":
+      x1 = ax; y1 = ay;
+      x2 = ax + textWidth; y2 = ay + textHeight;
+      break;
+    case "top-right":
+      x1 = ax - textWidth; y1 = ay;
+      x2 = ax; y2 = ay + textHeight;
+      break;
+    case "bottom-left":
+      x1 = ax; y1 = ay - textHeight;
+      x2 = ax + textWidth; y2 = ay;
+      break;
+    case "bottom-right":
+      x1 = ax - textWidth; y1 = ay - textHeight;
+      x2 = ax; y2 = ay;
+      break;
+    default:
+      x1 = ax - textWidth / 2; y1 = ay - textHeight / 2;
+      x2 = ax + textWidth / 2; y2 = ay + textHeight / 2;
+  }
+
+  return {x1, y1, x2, y2};
+}
+
+function forcedLabelBoxesOverlapCircle(box, circle, extra = 0) {
+  const nearestX = Math.max(box.x1, Math.min(circle.x, box.x2));
+  const nearestY = Math.max(box.y1, Math.min(circle.y, box.y2));
+  const dx = nearestX - circle.x;
+  const dy = nearestY - circle.y;
+  return Math.hypot(dx, dy) <= circle.radius + extra;
+}
+
+function forcedLabelFitsViewport(box, width, height, margin = 8) {
+  return (
+    box.x1 >= margin &&
+    box.y1 >= margin &&
+    box.x2 <= width - margin &&
+    box.y2 <= height - margin
+  );
+}
+
+function forcedLabelAnchorOrder(dx, dy) {
+  // Choose the direction opposite to the nearest cluster first.
+  const angle = Math.atan2(dy, dx) + Math.PI;
+  const anchors = [
+    ["top", -Math.PI / 2],
+    ["top-right", -Math.PI / 4],
+    ["right", 0],
+    ["bottom-right", Math.PI / 4],
+    ["bottom", Math.PI / 2],
+    ["bottom-left", (3 * Math.PI) / 4],
+    ["left", Math.PI],
+    ["top-left", -(3 * Math.PI) / 4]
+  ];
+
+  const normalizeAngle = value => {
+    let a = value;
+    while (a > Math.PI) a -= Math.PI * 2;
+    while (a < -Math.PI) a += Math.PI * 2;
+    return a;
+  };
+
+  return anchors
+    .map(([anchor, anchorAngle], index) => ({
+      anchor,
+      index,
+      distance: Math.abs(normalizeAngle(anchorAngle - angle))
+    }))
+    .sort((a, b) => a.distance - b.distance || a.index - b.index)
+    .map(item => item.anchor);
+}
+
+function updateForcedSettlementLabelPositions() {
+  if (!state.map || !state.map.getSource("forced-settlement-labels") || !state.map.getLayer("forced-settlement-labels")) {
+    return;
+  }
+
+  if (state.map.getZoom() < 9 || !state.forcedSettlementFeatures.length) return;
+
+  const clusterLayers = categories
+    .map(cat => makeClusterLayerId(cat.id))
+    .filter(id => state.map.getLayer(id));
+
+  const clusters = clusterLayers.length
+    ? state.map.queryRenderedFeatures({layers: clusterLayers})
+    : [];
+
+  const clusterCircles = clusters.map(feature => {
+    const point = state.map.project(feature.geometry.coordinates);
+    return {
+      x: point.x,
+      y: point.y,
+      radius: forcedLabelClusterRadius(feature.properties?.point_count) + 6
+    };
+  });
+
+  const zoom = state.map.getZoom();
+  const textSize = forcedLabelTextSize();
+  const viewportWidth = state.map.getContainer().clientWidth;
+  const viewportHeight = state.map.getContainer().clientHeight;
+
+  const updated = state.forcedSettlementFeatures.map(feature => {
+    const name = String(feature.properties?.name || "");
+    const point = state.map.project(feature.geometry.coordinates);
+    const textWidth = Math.min(name.length * textSize * 0.56 + 6, textSize * 11);
+    const textHeight = textSize * 1.1;
+
+    // No collision: keep the original visual position (bottom, zero offset).
+    const conflicts = clusterCircles
+      .map(circle => ({
+        circle,
+        dx: circle.x - point.x,
+        dy: circle.y - point.y,
+        distance: Math.hypot(circle.x - point.x, circle.y - point.y)
+      }))
+      .filter(item => item.distance <= item.circle.radius + Math.max(textWidth, textHeight));
+
+    let anchor = "bottom";
+    let radialOffsetEm = 0;
+
+    if (conflicts.length) {
+      const nearest = conflicts.reduce((best, current) =>
+        current.distance < best.distance ? current : best
+      );
+
+      const anchors = forcedLabelAnchorOrder(nearest.dx, nearest.dy);
+      const radialOffsetsEm = [0, 0.45, 0.8, 1.15, 1.5, 2.0, 2.5, 3.0, 3.5];
+      let chosen = null;
+
+      for (const candidateAnchor of anchors) {
+        for (const candidateOffsetEm of radialOffsetsEm) {
+          const box = forcedLabelTextBox(
+            point,
+            candidateAnchor,
+            textWidth,
+            textHeight,
+            candidateOffsetEm * textSize
+          );
+
+          const clashesCluster = conflicts.some(item =>
+            forcedLabelBoxesOverlapCircle(box, item.circle, 2)
+          );
+
+          if (!clashesCluster && forcedLabelFitsViewport(box, viewportWidth, viewportHeight, 8)) {
+            chosen = {anchor: candidateAnchor, radialOffsetEm: candidateOffsetEm};
+            break;
+          }
+        }
+        if (chosen) break;
+      }
+
+      // There can be no completely free position at the very edge of the
+      // viewport. In that case, keep the label visible and use a safe side
+      // with the smallest estimated overlap rather than hiding it.
+      if (!chosen) {
+        const fallbackCandidates = [];
+        for (const candidateAnchor of anchors) {
+          for (const candidateOffsetEm of [1.5, 2.0, 2.5, 3.0, 3.5]) {
+            const box = forcedLabelTextBox(
+              point,
+              candidateAnchor,
+              textWidth,
+              textHeight,
+              candidateOffsetEm * textSize
+            );
+            const overlapScore = conflicts.reduce((score, item) => {
+              const nearestX = Math.max(box.x1, Math.min(item.circle.x, box.x2));
+              const nearestY = Math.max(box.y1, Math.min(item.circle.y, box.y2));
+              const d = Math.hypot(nearestX - item.circle.x, nearestY - item.circle.y);
+              return score + Math.max(0, item.circle.radius + 2 - d);
+            }, 0);
+            const viewportPenalty =
+              Math.max(0, 8 - box.x1) +
+              Math.max(0, 8 - box.y1) +
+              Math.max(0, box.x2 - viewportWidth + 8) +
+              Math.max(0, box.y2 - viewportHeight + 8);
+            fallbackCandidates.push({anchor: candidateAnchor, radialOffsetEm: candidateOffsetEm, score: overlapScore + viewportPenalty * 2});
+          }
+        }
+        fallbackCandidates.sort((a, b) => a.score - b.score);
+        chosen = fallbackCandidates[0] || {anchor:"bottom", radialOffsetEm:0};
+      }
+
+      anchor = chosen.anchor;
+      radialOffsetEm = chosen.radialOffsetEm;
+    }
+
+    return {
+      ...feature,
+      properties: {
+        ...feature.properties,
+        text_anchor: anchor,
+        text_radial_offset: Number(radialOffsetEm.toFixed(2))
+      }
+    };
+  });
+
+  state.forcedSettlementFeatures = updated;
+  state.map.getSource("forced-settlement-labels").setData({
+    type: "FeatureCollection",
+    features: updated
+  });
+
+  console.debug("Labels de communes recalculados", {
+    zoom: Number(zoom.toFixed(2)),
+    clusters: clusterCircles.length
+  });
+}
+
+function scheduleForcedSettlementLabelLayout(delay = 70) {
+  if (!state.map || !state.map.getLayer("forced-settlement-labels")) return;
+
+  if (state.forcedSettlementLayoutTimer) {
+    clearTimeout(state.forcedSettlementLayoutTimer);
+  }
+
+  state.forcedSettlementLayoutTimer = setTimeout(() => {
+    state.forcedSettlementLayoutTimer = null;
+    if (!state.map || !state.map.getLayer("forced-settlement-labels")) return;
+    requestAnimationFrame(() => updateForcedSettlementLabelPositions());
+  }, delay);
+}
+
 function addForcedSettlementLabels() {
   if (!state.map) return;
 
   const sourceId = "forced-settlement-labels";
   const layerId = "forced-settlement-labels";
 
-  // Coordinates and properties from the user's actual place_label inspection.
-  const forcedSettlements = [
-    {name:"Agel",               longitude:2.852754592895508, latitude:43.338101253312686, symbolrank:16, filterrank:2},
-    {name:"Aigne",              longitude:2.7980804443359375, latitude:43.332701157395036, symbolrank:16, filterrank:2},
-    {name:"Aigues-Vives",       longitude:2.817091941833496,  latitude:43.337601842628885, symbolrank:16, filterrank:1},
-    {name:"Azillanet",          longitude:2.737741470336914, latitude:43.32458450313996,  symbolrank:16, filterrank:2},
-    {name:"Beaufort",           longitude:2.7587270736694336, latitude:43.29857268764732,  symbolrank:16, filterrank:4},
-    {name:"La Caunette",        longitude:2.7795839309692383, latitude:43.352488759492616, symbolrank:16, filterrank:1},
-    {name:"Cesseras",           longitude:2.7167129516601562, latitude:43.32420986214322,  symbolrank:16, filterrank:5},
-    {name:"Félines-Minervois",  longitude:2.601141929626465,  latitude:43.3298916690492,   symbolrank:16, filterrank:1},
-    {name:"La Livinière",       longitude:2.6363325119018555, latitude:43.316092073213014,  symbolrank:16, filterrank:3},
-    {name:"Minerve",            longitude:2.746281623840332,  latitude:43.35395540696757,   symbolrank:16, filterrank:3},
-    {name:"Olonzac",            longitude:2.729673385620117,  latitude:43.284453573835634,  symbolrank:15, filterrank:1},
-    {name:"Oupia",              longitude:2.7666234970092773, latitude:43.28979548243444,   symbolrank:16, filterrank:3},
-    {name:"Siran",              longitude:2.661309242248535,  latitude:43.313562848157375,  symbolrank:16, filterrank:4},
-    {name:"Pépieux",            longitude:2.680063247680664,  latitude:43.29744827659317,   symbolrank:15, filterrank:2},
-    {name:"Rieux-Minervois",    longitude:2.5861215591430664, latitude:43.28267283338644,   symbolrank:15, filterrank:1},
-    {name:"Lézignan-Corbières", longitude:2.7574825286865234, latitude:43.20089013057347,   symbolrank:13, filterrank:1}
-  ];
-
-  const features = forcedSettlements.map(place => ({
+  const features = FORCED_SETTLEMENTS.map(place => ({
     type: "Feature",
+    id: `forced-settlement-${place.name}`,
     geometry: {
       type: "Point",
       coordinates: [place.longitude, place.latitude]
@@ -193,9 +469,12 @@ function addForcedSettlementLabels() {
       symbolrank: place.symbolrank,
       filterrank: place.filterrank,
       text_anchor: "bottom",
+      text_radial_offset: 0,
       capital: 0
     }
   }));
+
+  state.forcedSettlementFeatures = features;
 
   if (!state.map.getSource(sourceId)) {
     state.map.addSource(sourceId, {
@@ -212,7 +491,7 @@ function addForcedSettlementLabels() {
       id: layerId,
       type: "symbol",
       source: sourceId,
-      minzoom: 9,
+      minzoom: 10.5,
       maxzoom: 22,
 
       layout: {
@@ -224,22 +503,26 @@ function addForcedSettlementLabels() {
           "interpolate",
           ["linear"],
           ["zoom"],
-          9, 15,
-          13, 17,
-          18, 19,
-          22, 19
+          9, 16,
+          13, 18,
+          18, 20,
+          22, 22
         ],
 
-        "text-radial-offset": 0,
+        // Position is decided per town by updateForcedSettlementLabelPositions().
+        "text-anchor": ["get", "text_anchor"],
+        "text-radial-offset": ["get", "text_radial_offset"],
         "symbol-sort-key": ["get", "symbolrank"],
         "icon-image": "",
         "text-font": [
           "DIN Pro Regular",
           "Arial Unicode MS Regular"
         ],
-        "text-anchor": ["get", "text_anchor"],
         "text-field": ["get", "name"],
-        "text-max-width": 11
+        "text-max-width": 11,
+        "text-allow-overlap": true,
+        "text-ignore-placement": true,
+        "text-padding": 2
       },
 
       paint: {
@@ -253,13 +536,17 @@ function addForcedSettlementLabels() {
     });
   }
 
+  if (state.map.getLayer(layerId)) {
+    state.map.setLayerZoomRange(layerId, 10.5, 22);
+  }
+
   // Deterministic replacement:
   // keep our custom label from zoom 9 through 22 and remove those same
   // names from the original Mapbox label layer to prevent duplicates.
   const originalLayerId = "settlement-minor-label";
 
   if (state.map.getLayer(originalLayerId)) {
-    const names = forcedSettlements.map(place => place.name);
+    const names = FORCED_SETTLEMENTS.map(place => place.name);
     const currentFilter = state.map.getFilter(originalLayerId);
 
     const excludeForcedNames = [
@@ -280,6 +567,8 @@ function addForcedSettlementLabels() {
         : excludeForcedNames
     );
   }
+
+  scheduleForcedSettlementLabelLayout(120);
 }
 
 function initMap() {
@@ -290,10 +579,15 @@ function initMap() {
       container: "map",
       style: mapbox.style,
       center: mapbox.center,
-      zoom: mapbox.zoom,
+      zoom: Math.max(Number(mapbox.zoom) || 0, 10.5),
+      minZoom: 10.5,
       attributionControl: true,
       cooperativeGestures: false
     });
+
+    // IMPORTANT: minzoom on a layer only controls that layer's visibility.
+    // minZoom here controls the map itself, preventing zooming out below 11.
+    state.map.setMinZoom(10.5);
 
     state.map.on("load", () => {
       state.diagnostics.mapbox = "ok";
@@ -305,6 +599,9 @@ function initMap() {
       try {
         buildMapLayers();
         addForcedSettlementLabels();
+
+        state.map.on("moveend", () => scheduleForcedSettlementLabelLayout(40));
+        state.map.on("zoomend", () => scheduleForcedSettlementLabelLayout(40));
 
         state.diagnostics.layers = "ok";
         updateSources();
@@ -420,7 +717,7 @@ function buildMapLayers() {
       layout: {
         "text-field": "{point_count_abbreviated}",
         "text-font": ["Open Sans Bold"],
-        "text-size": 11
+        "text-size": 10.5
       },
       paint: {"text-color":"#fff"}
     });
@@ -444,14 +741,92 @@ function buildMapLayers() {
   });
 }
 
-async function fetchCsv(meta) {
+// -----------------------------------------------------------------------------
+// FAST DATA LOADING
+// -----------------------------------------------------------------------------
+// Google Sheets remains the source of truth. The optimization only changes
+// how the 53 CSV sources are fetched: several requests run in parallel instead
+// of one after another. A short session cache avoids downloading the same CSVs
+// again during the same browser session. The refresh button bypasses the cache
+// and requests fresh data from Google Sheets.
+const CSV_CONCURRENCY = 8;
+const CSV_CACHE_TTL_MS = 5 * 60 * 1000;
+const CSV_CACHE_PREFIX = "services-equipements-csv-v2:";
+
+function csvCacheKey(meta) {
+  return `${CSV_CACHE_PREFIX}${meta.id}`;
+}
+
+function readCsvCache(meta) {
+  try {
+    const raw = sessionStorage.getItem(csvCacheKey(meta));
+    if (!raw) return null;
+
+    const cached = JSON.parse(raw);
+    if (!cached || !cached.savedAt || !Array.isArray(cached.rows)) {
+      sessionStorage.removeItem(csvCacheKey(meta));
+      return null;
+    }
+
+    if (Date.now() - cached.savedAt > CSV_CACHE_TTL_MS) {
+      sessionStorage.removeItem(csvCacheKey(meta));
+      return null;
+    }
+
+    return cached.rows;
+  } catch {
+    return null;
+  }
+}
+
+function writeCsvCache(meta, rows) {
+  try {
+    const payload = JSON.stringify({
+      savedAt: Date.now(),
+      rows
+    });
+
+    // Do not let a very large sheet break loading because of storage limits.
+    if (payload.length > 700000) return;
+
+    sessionStorage.setItem(csvCacheKey(meta), payload);
+  } catch {
+    // Cache is an optimization only; ignore storage failures.
+  }
+}
+
+function parseCsvRows(csvText, meta) {
+  if (!csvText.trim()) return [];
+
+  const results = Papa.parse(csvText, {
+    header: true,
+    skipEmptyLines: "greedy",
+    transformHeader: header => String(header ?? "").replace(/^\uFEFF/, "").trim()
+  });
+
+  if (results.errors?.length) {
+    console.warn(`CSV warnings: ${meta.name}`, results.errors);
+  }
+
+  return results.data || [];
+}
+
+async function fetchCsv(meta, {forceRefresh = false} = {}) {
+  if (!forceRefresh) {
+    const cachedRows = readCsvCache(meta);
+    if (cachedRows) {
+      return {rows: cachedRows, cached: true};
+    }
+  }
+
   const baseUrl = meta.csv;
   let lastError = null;
 
-  // A few published Google Sheets can occasionally fail one request.
-  // Retry once before marking the source as failed.
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const url = `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}_=${Date.now()}_${attempt}`;
+    const url = forceRefresh
+      ? `${baseUrl}${baseUrl.includes("?") ? "&" : "?"}_=${Date.now()}_${attempt}`
+      : baseUrl;
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 15000);
 
@@ -459,7 +834,7 @@ async function fetchCsv(meta) {
       const response = await fetch(url, {
         method: "GET",
         mode: "cors",
-        cache: "no-store",
+        cache: forceRefresh ? "no-store" : "default",
         signal: controller.signal
       });
 
@@ -468,26 +843,17 @@ async function fetchCsv(meta) {
       }
 
       const csvText = await response.text();
-      if (!csvText.trim()) return [];
+      const rows = parseCsvRows(csvText, meta);
 
-      const results = Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: "greedy",
-        transformHeader: header => String(header ?? "").replace(/^\uFEFF/, "").trim()
-      });
-
-      if (results.errors?.length) {
-        console.warn(`CSV warnings: ${meta.name}`, results.errors);
-      }
-
-      return results.data || [];
+      writeCsvCache(meta, rows);
+      return {rows, cached: false};
     } catch (error) {
       lastError = error?.name === "AbortError"
         ? new Error("Timeout après 15 secondes")
         : error;
 
       if (attempt < 2) {
-        await new Promise(resolve => setTimeout(resolve, 400));
+        await new Promise(resolve => setTimeout(resolve, 250));
       }
     } finally {
       clearTimeout(timeout);
@@ -497,8 +863,10 @@ async function fetchCsv(meta) {
   throw lastError || new Error("Erreur inconnue");
 }
 
-async function loadAllData() {
+async function loadAllData(forceRefresh = false) {
   if (state.loading) return;
+
+  const startedAt = performance.now();
 
   state.loading = true;
   state.records = [];
@@ -518,49 +886,86 @@ async function loadAllData() {
   showLoading(true, sources.length);
   updateDiagnostics();
 
-  for (let i = 0; i < sources.length; i++) {
-    const {category, meta} = sources[i];
-    updateLoadingProgress(i, sources.length, meta, "loading");
+  let nextIndex = 0;
+  let completed = 0;
 
-    try {
-      const rows = await fetchCsv(meta);
-      const records = rows
-        .map((row, index) => normalizeRow(row, meta, index))
-        .filter(Boolean);
+  async function worker() {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= sources.length) return;
 
-      state.bySubcategory.set(meta.id, records);
-      state.records.push(...records);
-      state.sourceStatus.set(meta.id, {
-        status: "ok",
-        rows: rows.length,
-        valid: records.length,
-        meta,
-        category
-      });
+      const {category, meta} = sources[index];
+      updateLoadingProgress(completed, sources.length, meta, "loading");
 
-      updateLoadingProgress(i + 1, sources.length, meta, "ok", records.length, null, rows.length);
-    } catch (error) {
-      console.error(`Erreur CSV ${meta.name}`, error);
-      state.bySubcategory.set(meta.id, []);
-      state.sourceStatus.set(meta.id, {
-        status: "error",
-        rows: 0,
-        valid: 0,
-        meta,
-        category,
-        error: error?.message || String(error)
-      });
+      try {
+        const result = await fetchCsv(meta, {forceRefresh});
+        const rows = result.rows;
+        const records = rows
+          .map((row, rowIndex) => normalizeRow(row, meta, rowIndex))
+          .filter(Boolean);
 
-      updateLoadingProgress(i + 1, sources.length, meta, "error", 0, error);
+        state.bySubcategory.set(meta.id, records);
+        state.sourceStatus.set(meta.id, {
+          status: "ok",
+          rows: rows.length,
+          valid: records.length,
+          meta,
+          category,
+          cached: result.cached
+        });
+
+        completed += 1;
+        state.diagnostics.loaded = completed;
+        updateLoadingProgress(
+          completed,
+          sources.length,
+          meta,
+          "ok",
+          records.length,
+          null,
+          rows.length
+        );
+        updateDiagnostics();
+      } catch (error) {
+        console.error(`Erreur CSV ${meta.name}`, error);
+
+        state.bySubcategory.set(meta.id, []);
+        state.sourceStatus.set(meta.id, {
+          status: "error",
+          rows: 0,
+          valid: 0,
+          meta,
+          category,
+          error: error?.message || String(error)
+        });
+
+        completed += 1;
+        state.diagnostics.loaded = completed;
+        updateLoadingProgress(
+          completed,
+          sources.length,
+          meta,
+          "error",
+          0,
+          error
+        );
+        updateDiagnostics();
+      }
     }
-
-    state.diagnostics.loaded = i + 1;
-    updateDiagnostics();
   }
+
+  const workerCount = Math.min(CSV_CONCURRENCY, sources.length);
+  await Promise.all(
+    Array.from({length: workerCount}, () => worker())
+  );
+
+  // Restore the original source/category order for stable results.
+  state.records = sources.flatMap(({meta}) =>
+    state.bySubcategory.get(meta.id) || []
+  );
 
   state.diagnostics.sources = "ok";
 
-  // The map may not have loaded yet. Render UI regardless.
   renderFilters();
   renderLegend();
   renderStats();
@@ -570,6 +975,7 @@ async function loadAllData() {
     try {
       updateSources();
       updateVisibility();
+      scheduleForcedSettlementLabelLayout(100);
     } catch (error) {
       state.diagnostics.layers = "error";
       console.error("Erreur ao atualizar sources/layers:", error);
@@ -578,6 +984,12 @@ async function loadAllData() {
 
   updateDiagnostics();
   showLoading(false);
+
+  const elapsed = Math.round(performance.now() - startedAt);
+  console.info(
+    `Chargement des ${sources.length} sources terminé en ${elapsed} ms ` +
+    `(${forceRefresh ? "refresh réseau" : "cache/réseau"}).`
+  );
 
   const failed = [...state.sourceStatus.values()].filter(s => s.status === "error");
 
@@ -615,6 +1027,8 @@ function updateSources() {
       features
     });
   });
+
+  scheduleForcedSettlementLabelLayout(80);
 }
 
 function renderFilters() {
@@ -1028,7 +1442,7 @@ function setupUI() {
   $("#zoomIn").onclick = () => state.map?.zoomIn();
   $("#zoomOut").onclick = () => state.map?.zoomOut();
   $("#resetView").onclick = () => state.map?.flyTo({center:mapbox.center,zoom:mapbox.zoom});
-  $("#refreshBtn").onclick = () => loadAllData();
+  $("#refreshBtn").onclick = () => loadAllData(true);
 
   $("#toggleFilters").onclick = () => $(".sidebar").classList.toggle("open");
   $("#collapseSidebar").onclick = () => $(".sidebar").classList.toggle("open");
